@@ -1,0 +1,13 @@
+numpy
+pandas
+pyBigWig
+tqdm
+hurst
+numba
+MFDFA
+scikit-learn
+matplotlib
+pyqt5
+statsmodels
+umap-learn
+pyranges
