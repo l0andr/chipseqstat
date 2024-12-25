@@ -162,7 +162,7 @@ def process_bw_file(filepath, chrom, start, end,genes,genes_as_features = False,
             for val in values:
                 stat_dict = compute_features(val,MFDFA_scales,MFDFA_qmax,MFDFA_qmin,MFDFA_qstep,ACF_lags,ACF_lags_step,percentile_step)
                 for key in stat_dict:
-                    out_dict[f"region_{i_region}_{key}"] = stat_dict[key]
+                    out_dict[f"{key}_region_{i_region}"] = stat_dict[key]
                 i_region += 1
         else:
             out_dict.update(compute_features(values,MFDFA_scales,MFDFA_qmax,MFDFA_qmin,MFDFA_qstep,ACF_lags,ACF_lags_step,percentile_step))
