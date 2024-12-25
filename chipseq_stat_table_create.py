@@ -10,6 +10,7 @@ import pyranges
 from numba import njit
 from MFDFA import MFDFA
 from scipy.constants import value
+from sklearn.utils.fixes import percentile
 from tqdm import tqdm
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from statsmodels.tsa.stattools import acf
@@ -54,11 +55,11 @@ def dfa(signal, scales):
     slope, intercept = np.polyfit(log_scales, log_fluct, 1)
     return slope
 
-def compute_base_stat(values:np.array):
+def compute_base_stat(values:np.array,percentile_step:int):
     out_stat = {}
     out_stat["mean"] = np.nanmean(values)
-    for i in range(1,30):
-        out_stat[f"q{i}"] = np.nanquantile(values, i/30)
+    for i in range(1,100,percentile_step):
+        out_stat[f"q{i}"] = np.nanquantile(values, i/100)
     out_stat["std"] = np.nanstd(values)
     out_stat["min"] = np.nanmin(values)
     out_stat["max"] = np.nanmax(values)
@@ -67,9 +68,6 @@ def compute_base_stat(values:np.array):
     out_stat["coverage"] = out_stat["count"] / len(values)
     out_stat["nans"] = np.sum(np.isnan(values))
     out_stat["zeros"] = np.sum(values == 0)
-    out_stat["above_q7"] = np.sum(values > out_stat["q7"])/len(values)
-    out_stat["below_q3"] = np.sum(values < out_stat["q3"])/len(values)
-    out_stat["between_q3_q7"] = np.sum((values >= out_stat["q3"]) & (values <= out_stat["q7"]))/len(values)
     return out_stat
 
 def parse_filename(filename):
@@ -82,6 +80,27 @@ def parse_filename(filename):
             antibody_id = "Delta_N_p63"
         return {"sample_id": sample_id, "N/T": tissue_type, "antibody_id": antibody_id}
     return None
+
+
+def compute_features(values:np.array,
+                     MFDFA_scales:np.array,
+                     MFDFA_qmax:int,MFDFA_qmin:int,MFDFA_qstep:int,ACF_lags:int,ACF_lags_step:int,percentile_step:int):
+    out_dict = {}
+    out_stat = compute_base_stat(values,percentile_step)
+    out_dict.update(out_stat)
+    for q in range(MFDFA_qmin, MFDFA_qmax + 1, MFDFA_qstep):
+        lag, dfar = MFDFA(values, q=q, order=1, lag=MFDFA_scales)
+        # polyfit returns (slope, intercept), slope is index 0
+        out_dict[f"MFDFA{q}"] = np.polyfit(np.log(lag)[4:], np.log(dfar[4:]), 1)[0][0]
+    acf_data = acf(values, nlags=ACF_lags)
+    # keep each 100th value
+    acf_data_100 = acf_data[::ACF_lags_step]
+    i = 0
+    for v in acf_data_100:
+        out_dict[f"ACF_{i * ACF_lags_step}"] = v
+        i = i + 1
+    return out_dict
+
 
 def process_bw_file(filepath, chrom, start, end,genes,genes_as_features = False, verbose = 0):
     filename = os.path.basename(filepath)
@@ -111,8 +130,7 @@ def process_bw_file(filepath, chrom, start, end,genes,genes_as_features = False,
                 if not genes_as_features:
                     values.extend(gene_values)
                 else:
-                    values.append(gene_values.tolist())
-                    raise("Not implemented")
+                    values.append(np.nan_to_num(np.array(gene_values)))
             if verbose > 1:
                 if genes_as_features:
                     print(f"Processing {filename} for {len(values)} fragments")
@@ -124,26 +142,30 @@ def process_bw_file(filepath, chrom, start, end,genes,genes_as_features = False,
         #replace NaNs with zeros
 
         bw.close()
-
-        out_stat = compute_base_stat(values)
+        MFDFA_scale_start = 0.1
+        MFDFA_scale_end = 4
+        MFDFA_scale_num = 20
+        MFDFA_scales = np.unique(np.logspace(MFDFA_scale_start,MFDFA_scale_end,MFDFA_scale_num).astype(int))
+        MFDFA_qmax = 1
+        MFDFA_qmin = 1
+        MFDFA_qstep = 1
+        ACF_lags = 3000
+        ACF_lags_step = 100
+        percentile_step= 5
         file_attrs = parse_filename(filename)
-        out_dict.update(out_stat)
+
         if file_attrs is not None:
             out_dict.update(file_attrs)
 
-        scales = np.unique(np.logspace(0.1, 4, 20).astype(int))
-        for q in [1,2,3,4,5,6]:
-            lag, dfar = MFDFA(values, q=q, order=1, lag=scales)
-            # polyfit returns (slope, intercept), slope is index 0
-            out_dict[f"MFDFA{q}"] =  np.polyfit(np.log(lag)[4:], np.log(dfar[4:]), 1)[0][0]
-
-        acf_data = acf(values, nlags=3000)
-        #keep each 100th value
-        acf_data_100 = acf_data[::100]
-        i = 0
-        for v in acf_data_100:
-            out_dict[f"ACF_{i*100}"] = v
-            i = i + 1
+        if genes_as_features:
+            i_region = 0
+            for val in values:
+                stat_dict = compute_features(val,MFDFA_scales,MFDFA_qmax,MFDFA_qmin,MFDFA_qstep,ACF_lags,ACF_lags_step,percentile_step)
+                for key in stat_dict:
+                    out_dict[f"region_{i_region}_{key}"] = stat_dict[key]
+                i_region += 1
+        else:
+            out_dict.update(compute_features(values,MFDFA_scales,MFDFA_qmax,MFDFA_qmin,MFDFA_qstep,ACF_lags,ACF_lags_step,percentile_step))
         return out_dict
     except Exception as e:
         print(f"Error processing '{filename}': {e}")
